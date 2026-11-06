@@ -2,12 +2,11 @@ from ibm_watsonx_ai.foundation_models import ModelInference
 from ibm_watsonx_ai.metanames import GenTextParamsMetaNames as GenParams
 from ibm_watsonx_ai.metanames import EmbedTextParamsMetaNames
 from ibm_watsonx_ai import Credentials
-from langchain_ibm import WatsonxLLM, WatsonxEmbeddings
+from langchain_ibm import WatsonxLLM, WatsonxEmbeddings, ChatWatsonx
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.chains import RetrievalQA
-from huggingface_hub import HfFolder
 
 import gradio as gr
 
@@ -20,19 +19,15 @@ warnings.filterwarnings('ignore')
 
 ## LLM
 def get_llm():
-    model_id = 'ibm/granite-4-h-small'  # verify this ID against your watsonx project's available models
-    parameters = {
-        GenParams.MAX_NEW_TOKENS: 256,
-        GenParams.TEMPERATURE: 0.5,
-    }
-    project_id = "skills-network"
-    watsonx_llm = WatsonxLLM(
-        model_id=model_id,
+    return ChatWatsonx(
+        model_id="ibm/granite-4-h-small",
         url="https://us-south.ml.cloud.ibm.com",
-        project_id=project_id,
-        params=parameters,
+        project_id="skills-network",
+        params={
+            GenParams.MAX_NEW_TOKENS: 512,
+            GenParams.TEMPERATURE: 0.5,
+        },
     )
-    return watsonx_llm
 
 ## Document loader
 def document_loader(file):
@@ -53,7 +48,7 @@ def text_splitter(data, chunk_size=200, chunk_overlap=20):
 ## Embedding model
 def watsonx_embedding():
     embed_params = {
-        EmbedTextParamsMetaNames.TRUNCATE_INPUT_TOKENS: 3,
+        EmbedTextParamsMetaNames.TRUNCATE_INPUT_TOKENS: 512,
         EmbedTextParamsMetaNames.RETURN_OPTIONS: {"input_text": True}
     }
     embedding_model = WatsonxEmbeddings(
@@ -72,23 +67,38 @@ def vector_database(chunks):
 
 ## Retriever
 def retriever(file, chunk_size=200, chunk_overlap=20):
+    print("2a. loading PDF")
     splits = document_loader(file)
+    print("2b. pages loaded:", len(splits),
+          "| chars on page 1:", len(splits[0].page_content) if splits else 0)
     chunks = text_splitter(splits, chunk_size, chunk_overlap)
+    print("2c. chunks:", len(chunks))
+    print("2d. embedding + building Chroma...")
     vectordb = vector_database(chunks)
+    print("2e. Chroma built")
     return vectordb.as_retriever()
 
 ## QA Chain
 def retriever_qa(file, query):
-    llm = get_llm()
-    retriever_obj = retriever(file)
-    qa = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever_obj,
-        return_source_documents=False,
-    )
-    response = qa.invoke(query)
-    return response['result']
+    try:
+        print("1. file:", file, "| query:", query)
+        llm = get_llm()
+        print("2. LLM created")
+        retriever_obj = retriever(file)
+        print("3. retriever built")
+        qa = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=retriever_obj,
+            return_source_documents=False,
+        )
+        response = qa.invoke(query)
+        print("4. raw response:", repr(response))
+        return response['result'] or "(model returned an empty string)"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return f"ERROR: {type(e).__name__}: {e}"
 
 # Create Gradio interface
 rag_application = gr.Interface(
@@ -103,4 +113,4 @@ rag_application = gr.Interface(
 )
 
 # Launch the app
-rag_application.launch(server_name="0.0.0.0", server_port=7870, share=True)
+rag_application.launch(server_name="0.0.0.0", server_port=7878, share=True)
